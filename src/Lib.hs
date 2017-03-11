@@ -7,7 +7,7 @@ module Lib
 
 import GHC.Generics
 import Data.Aeson (parseJSON, eitherDecode, (.:))
-import Data.Aeson.Types (parseEither, Object)
+import Data.Aeson.Types (parseMaybe, Object)
 import Data.Aeson.Parser -- (decodeWith, json)
 --import Data.Aeson.Internal (IResult,ifromJSON)
 import Text.Feed.Import (parseFeedFromFile)
@@ -26,6 +26,7 @@ import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import Data.SemVer
 import Data.List (zip4)
 import qualified Data.Set as Set
+import System.Environment (getArgs)
 
 type Dependencies =
   [(String, String)]
@@ -57,11 +58,18 @@ vulFromRegex ((_, _, _, (a:b:c:d:e:[])), f, g, counter) = do
 
 run :: IO ()
 run = do
-  feed <- parseFeedFromFile "./feed.xml"
-  putStrLn "[OK] feed.xml read"
-  packageJSON <- BSL.readFile "package.json"
-  putStrLn "[OK] package.json read"
+  cmdArgs <- getArgs
   res <- runExceptT $ do
+    (feedP, packageP) <- liftEither
+      $ if length cmdArgs == 2 then
+          Right (cmdArgs !! 0, cmdArgs !! 1)
+        else
+          Left "\n\nUsage: SnykVulnChecker <path to feed.xml> <path to package.json>"
+    feed <- liftIO $ parseFeedFromFile feedP
+    liftIO $ putStrLn $ "[OK] " ++ feedP ++ " read"
+    packageJSON <- liftIO $ BSL.readFile packageP
+    liftIO $ putStrLn $ "[OK] " ++ packageP ++ " read"
+
     items <- liftEither
           $ case feed of
               RSSFeed (RSS.RSS _ _ channel _)
@@ -100,21 +108,22 @@ run = do
   case res of
     Left e -> putStrLn $ "[ERROR] " ++ e
     Right rs -> do
-      putStrLn $ "\n\n[RESULT] Fount "
-        ++ (show $ length rs) ++ " Vulnerabilit"
-        ++ (if length rs == 1 then "y" else "ies") ++ ":\n"
+      putStrLn $ "\n\n[RESULT] Found "
+        ++ (show $ count) ++ " Vulnerabilit"
+        ++ (if count == 1 then "y" else "ies") ++ ":\n"
       mapM (\(p, ver, vs) ->
               mapM (\v -> do
                        putStrLn $ "Packet " ++ p ++ " (Version: " ++ ver ++ ")"
                          ++ " vulnerable to:\n" ++ vulTitle v
                        putStrLn $ "Severity: " ++ vulSeverity v
                        putStrLn $ "Vulnerable versions: " ++ (show $ vulVersion v)
-                       putStrLn $ "Fount on: " ++ (show $ vulDate v)
+                       putStrLn $ "Found on: " ++ (show $ vulDate v)
                        putStrLn $ "See more at: " ++ vulUrl v
-                       putStrLn "\n\n\n")
+                       putStrLn "")
               vs)
         rs
       return ()
+        where count = length $ join $ map (thd) rs
 
 
 checkForNpm :: RSSItem -> Bool
@@ -139,13 +148,18 @@ fromDescription = map (maybe "" id)
 parsePackageJSON :: BSL.ByteString -> Either String Dependencies
 parsePackageJSON packageJSON = do
   p <- eitherDecode packageJSON
-  flip parseEither p $ \obj -> do
-    foldl (liftM2 (++)) (return [])
-      $ map (parse obj) ["dependencies", "devDependencies"]
-    where parse obj fieldName = do
+  let dep = fromMaybe [] $ parse p "dependencies"
+  let depDev = fromMaybe [] $ parse p "devDependencies"
+  let deps = dep ++ depDev
+  if length deps == 0 then Left "No dependencies found"
+    else Right deps
+  where parse p fieldName =
+          flip parseMaybe p $ \obj -> do
             dep <- obj .: (pack fieldName)
             maybe [] HM.toList <$> parseJSON dep
-
+        fromMaybe _ (Just x) = x
+        fromMaybe d _ = d
+--, "devDependencies"]
 
 mapEitherError f e = case e of
   Left x -> Left $ f x
