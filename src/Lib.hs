@@ -6,10 +6,10 @@ module Lib
 
 
 import GHC.Generics
-import Data.Aeson -- (parseJSON, fromJSON, Value, Result, ToJSONKey)
-import Data.Aeson.Types
+import Data.Aeson (parseJSON, eitherDecode, (.:))
+import Data.Aeson.Types (parseEither, Object)
 import Data.Aeson.Parser -- (decodeWith, json)
-import Data.Aeson.Internal (IResult,ifromJSON)
+--import Data.Aeson.Internal (IResult,ifromJSON)
 import Text.Feed.Import (parseFeedFromFile)
 import qualified Data.HashMap.Strict as HM
 import Text.Feed.Types (Feed (RSSFeed))
@@ -20,10 +20,12 @@ import Data.Text.Lazy.Builder (toLazyText)
 import Data.Text (pack)
 import Data.Text.Lazy (unpack)
 import qualified Data.ByteString.Lazy as BSL
-import Data.Either.Utils
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Except
-
+import Control.Monad (liftM2, join)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
+import Data.SemVer
+import Data.List (zip4)
+import qualified Data.Set as Set
 
 type Dependencies =
   [(String, String)]
@@ -31,12 +33,27 @@ type Dependencies =
 data Vul = Vul
   { vulTitle :: String
   , vulPackage :: String
-  , vulVersion :: String
+  , vulVersion :: SemVerRange
   , vulSeverity :: String
   , vulUrl :: String
   , vulDate :: DateString
   , vulDescription :: String
+  , vulOrdNum :: Int
   } deriving (Show)
+
+instance Eq Vul where
+  a == b = vulOrdNum a == vulOrdNum b
+instance Ord Vul where
+  a <= b = vulOrdNum a <= vulOrdNum b
+
+vulFromRegex :: ((String, String, String, [String]), DateString, String, Int)
+  -> Either String Vul
+vulFromRegex ((_, _, _, (a:b:c:d:e:[])), f, g, counter) = do
+  c' <- mapEitherError
+    ((("Feed.xml\nTitle: " ++ a ++ "\nVersion: " ++ c) ++) . show)
+    $ parseSemVerRange $ pack c
+  return $ Vul a b c' d e f g counter
+
 
 run :: IO ()
 run = do
@@ -45,19 +62,38 @@ run = do
   packageJSON <- BSL.readFile "package.json"
   putStrLn "[OK] package.json read"
   res <- runExceptT $ do
-    let allItems = case feed of
-          RSSFeed (RSS.RSS _ _ channel _) -> rssItems channel
-    let items = filter checkForNpm allItems
-    liftIO $ putStrLn
-      $ "[OK] " ++ (show $ length items) ++ " Vulnerabilities found in feed.xml"
-    let vuls = map fromRegex
-               $ zip3 (fromTitle items) (fromDate items) (fromDescription items) :: [Vul]
+    items <- liftEither
+          $ case feed of
+              RSSFeed (RSS.RSS _ _ channel _)
+                -> Right $ rssItems channel
+              _ -> Left "RSS v2 required"
+    let items' = filter checkForNpm items
+    liftIO $ putStrLn $ "[OK] " ++ (show $ length items')
+      ++ " Vulnerabilities found in feed.xml"
+    vuls <- liftEither $ mapM vulFromRegex $ zip4
+               (fromTitle items')
+               (fromDate items')
+               (fromDescription items')
+               [1..]
     liftIO $ putStrLn $ "[OK] Parsed feed.xml"
-    r <- ExceptT $ return $ eitherDecode packageJSON
-    let lrDeps = parsePackageJSON r
-    deps <- ExceptT $ return $ lrDeps
+    deps <- liftEither $ parsePackageJSON packageJSON
+    deps' <- liftEither
+      $ mapM (mapEitherError show)
+      $ map (parseSemVerRange . pack) $ snd $ unzip $ deps
+    let deps'' = zip (fst $ unzip $ deps)
+          $ map versionsOf deps'
+    let depMatches =
+          map -- dependencies
+          (\(p, vs) -> (p, nubOrd $ join $ map -- versions of dependency
+            (\v ->
+               foldr -- vulnerabilities
+               (\y a -> if matches (vulVersion y) v then
+                          y : a
+                        else a) [] $ filter (\z -> p == vulPackage z) vuls
+            ) vs))
+          deps''
 
-    return deps
+    return $ filter (((<) 0) . length . snd) depMatches
 
   case res of
     Left e -> putStrLn $ "[ERROR] " ++ e
@@ -68,10 +104,6 @@ checkForNpm :: RSSItem -> Bool
 checkForNpm i = maybe False
                 (\guid -> "npm:" == (take 4 $ rssGuidValue guid))
                 (rssItemGuid i)
-
-fromRegex :: ((String, String, String, [String]), DateString, String) -> Vul
-fromRegex ((_, _, _, (a:b:c:d:e:[])), f, g) = Vul a b c d e f g
-
 
 fromTitle = map (\t -> t =~ "^(.*)\\sfor\\s(.*)\\s(.*)\\swith\\s(medium|high|low)\\sseverity\\s(.*)$")
             . map (replaceSpace)
@@ -87,21 +119,26 @@ fromDate = map (maybe "" id)
 fromDescription = map (maybe "" id)
                   . map rssItemDescription
 
-parsePackageJSON :: Object -> Either String Dependencies
-parsePackageJSON p = do
+parsePackageJSON :: BSL.ByteString -> Either String Dependencies
+parsePackageJSON packageJSON = do
+  p <- eitherDecode packageJSON
   flip parseEither p $ \obj -> do
-    dep <- obj .: (pack "dependencies")
-    maybe [] HM.toList <$> parseJSON dep
+    foldl (liftM2 (++)) (return [])
+      $ map (parse obj) ["dependencies", "devDependencies"]
+    where parse obj fieldName = do
+            dep <- obj .: (pack fieldName)
+            maybe [] HM.toList <$> parseJSON dep
 
 
-liftEither :: Either a b -> Either (IO a) (IO b)
-liftEither (Left a) = Left $ return a
-liftEither (Right a) = Right $ return a
+mapEitherError f e = case e of
+  Left x -> Left $ f x
+  Right x -> Right x
 
-liftLeft :: Either a b -> Either (IO a) b
-liftLeft (Left a) = Left $ return a
-liftLeft (Right a) = Right a
+liftEither = ExceptT . return
 
-liftRight :: Either a b -> Either a (IO b)
-liftRight (Right a) = Right $ return a
-liftRight (Left a) = Left a
+nubOrd :: Ord e => [e] -> [e]
+nubOrd xs = go Set.empty xs where
+  go s (x:xs)
+   | x `Set.member` s = go s xs
+   | otherwise        = x : go (Set.insert x s) xs
+  go _ _              = []
