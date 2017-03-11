@@ -80,11 +80,13 @@ run = do
     deps' <- liftEither
       $ mapM (mapEitherError show)
       $ map (parseSemVerRange . pack) $ snd $ unzip $ deps
-    let deps'' = zip (fst $ unzip $ deps)
-          $ map versionsOf deps'
+    let deps'' = zip3 (fst $ unzip $ deps)
+                 (snd $ unzip $ deps)
+                 $ map versionsOf deps'
     let depMatches =
-          map -- dependencies
-          (\(p, vs) -> (p, nubOrd $ join $ map -- versions of dependency
+          filter (((<) 0) . length . thd)
+          $ map -- dependencies
+          (\(p, v1, vs) -> (p, v1, nubOrd $ join $ map -- versions of dependency
             (\v ->
                foldr -- vulnerabilities
                (\y a -> if matches (vulVersion y) v then
@@ -93,11 +95,26 @@ run = do
             ) vs))
           deps''
 
-    return $ filter (((<) 0) . length . snd) depMatches
+    return $ depMatches
 
   case res of
     Left e -> putStrLn $ "[ERROR] " ++ e
-    Right r -> putStrLn $ "[OK] " ++ (show r)
+    Right rs -> do
+      putStrLn $ "\n\n[RESULT] Fount "
+        ++ (show $ length rs) ++ " Vulnerabilit"
+        ++ (if length rs == 1 then "y" else "ies") ++ ":\n"
+      mapM (\(p, ver, vs) ->
+              mapM (\v -> do
+                       putStrLn $ "Packet " ++ p ++ " (Version: " ++ ver ++ ")"
+                         ++ " vulnerable to:\n" ++ vulTitle v
+                       putStrLn $ "Severity: " ++ vulSeverity v
+                       putStrLn $ "Vulnerable versions: " ++ (show $ vulVersion v)
+                       putStrLn $ "Fount on: " ++ (show $ vulDate v)
+                       putStrLn $ "See more at: " ++ vulUrl v
+                       putStrLn "\n\n\n")
+              vs)
+        rs
+      return ()
 
 
 checkForNpm :: RSSItem -> Bool
@@ -142,3 +159,5 @@ nubOrd xs = go Set.empty xs where
    | x `Set.member` s = go s xs
    | otherwise        = x : go (Set.insert x s) xs
   go _ _              = []
+
+thd = \(_, _, x) -> x
