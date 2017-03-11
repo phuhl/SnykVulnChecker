@@ -1,11 +1,32 @@
 
 * SnykVulnChecker
 
+*Note:* Npm-projects only, no Ruby-checking
 
+SnykVulnChecker is a simple Haskell program that takes a package.json
+and a RSS 2.0 feed containing vulnerabilities in the format that the
+[[https://snyk.io/vuln/feed.xml][RSS-feed by Snyk]] has. Such a file can be used to check npm-projects
+for vulnerabilities.
 
-- https://snyk.io/vuln/feed.xml regelmäßig downloaden (cronjob)
-- git push
-  - https://snyk.io/vuln/feed.xml parsen
-  - package.js parsen
-  - vergleichen
-  - email senden
+If you want to check a repository but do not host it on github or it
+is private and do not want to grant excess to a third party you can
+simply use this script to check against a provided database.
+
+You could run this script as a git-hook and have a cronjob installed,
+that fetches new versions of the feed regularly in order to get a
+status update on every commit.
+
+** Install
+
+#+BEGIN_SRC shell-script
+sudo apt-get install stack
+# or what your distro takes
+
+git clone https://github.com/phuhl/SnykVulnChecker
+cd SnykVulnChecker
+
+stack setup
+stack build
+stack exec SnykVulnChecker-exe <path to feed.xml> <path to package.json>
+#+END_SRC
+
