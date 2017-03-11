@@ -1,0 +1,11 @@
+
+* SnykVulnChecker
+
+
+
+- https://snyk.io/vuln/feed.xml regelmäßig downloaden (cronjob)
+- git push
+  - https://snyk.io/vuln/feed.xml parsen
+  - package.js parsen
+  - vergleichen
+  - email senden

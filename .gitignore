@@ -1,0 +1,20 @@
+# haskell compilation files
+*.hi
+*.ho
+*.o
+
+~*
+
+# stack files
+.stack-work/
+
+# emacs backup files
+*~
+*\#
+
+# tern files
+.tern-port
+
+# project related
+feed.xml
+package.json
