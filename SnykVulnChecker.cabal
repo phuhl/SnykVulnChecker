@@ -26,6 +26,7 @@ library
                      , bytestring
                      , unordered-containers
                      , MissingH
+                     , transformers
   default-language:    Haskell2010
   
 

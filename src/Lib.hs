@@ -6,7 +6,6 @@ module Lib
 
 
 import GHC.Generics
-
 import Data.Aeson -- (parseJSON, fromJSON, Value, Result, ToJSONKey)
 import Data.Aeson.Types
 import Data.Aeson.Parser -- (decodeWith, json)
@@ -22,6 +21,8 @@ import Data.Text (pack)
 import Data.Text.Lazy (unpack)
 import qualified Data.ByteString.Lazy as BSL
 import Data.Either.Utils
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Except
 
 
 type Dependencies =
@@ -43,25 +44,24 @@ run = do
   putStrLn "[OK] feed.xml read"
   packageJSON <- BSL.readFile "package.json"
   putStrLn "[OK] package.json read"
-  let res = do
-        let allItems = case feed of
-              RSSFeed (RSS.RSS _ _ channel _) -> rssItems channel
-        let items = filter checkForNpm allItems
-        Right $ putStrLn $ "[OK] " ++ (show $ length items) ++ " Vulnerabilities found in feed.xml"
-        let vuls = map fromRegex
-                   $ zip3 (fromTitle items) (fromDate items) (fromDescription items) :: [Vul]
-        Right $ putStrLn $ "[OK] Parsed feed.xml"
-        r <- liftLeft $ eitherDecode packageJSON
-        let lrDeps = parsePackageJSON r
-        deps <- liftEither $ lrDeps :: Either (IO String) (IO Dependencies)
-        Right $ putStrLn <$> show <$> deps
-        Right $ show <$> deps
+  res <- runExceptT $ do
+    let allItems = case feed of
+          RSSFeed (RSS.RSS _ _ channel _) -> rssItems channel
+    let items = filter checkForNpm allItems
+    liftIO $ putStrLn
+      $ "[OK] " ++ (show $ length items) ++ " Vulnerabilities found in feed.xml"
+    let vuls = map fromRegex
+               $ zip3 (fromTitle items) (fromDate items) (fromDescription items) :: [Vul]
+    liftIO $ putStrLn $ "[OK] Parsed feed.xml"
+    r <- ExceptT $ return $ eitherDecode packageJSON
+    let lrDeps = parsePackageJSON r
+    deps <- ExceptT $ return $ lrDeps
+
+    return deps
 
   case res of
-    Left ioe -> do e <- ioe
-                   putStrLn $ "[ERROR] " ++ (show e)
-    Right ior -> do r <- ior
-                    putStrLn $ "[OK] " ++ (show r)
+    Left e -> putStrLn $ "[ERROR] " ++ e
+    Right r -> putStrLn $ "[OK] " ++ (show r)
 
 
 checkForNpm :: RSSItem -> Bool
